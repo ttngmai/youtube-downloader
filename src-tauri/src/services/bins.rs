@@ -8,22 +8,74 @@ use crate::error::AppError;
 pub const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 pub fn resolve_ytdlp(app: &AppHandle) -> Result<PathBuf, AppError> {
-    resolve_sidecar(app, "yt-dlp").ok_or_else(AppError::ytdlp_missing)
+    ensure_managed_from_sidecar(app, "yt-dlp");
+    managed_if_exists(app, "yt-dlp")
+        .or_else(|| find_bundled_sidecar(app, "yt-dlp"))
+        .or_else(|| find_on_path("yt-dlp"))
+        .ok_or_else(AppError::ytdlp_missing)
 }
 
 pub fn resolve_ffmpeg(app: &AppHandle) -> Option<PathBuf> {
-    resolve_sidecar(app, "ffmpeg")
+    ensure_managed_from_sidecar(app, "ffmpeg");
+    ensure_managed_from_sidecar(app, "ffprobe");
+    managed_if_exists(app, "ffmpeg")
+        .or_else(|| find_bundled_sidecar(app, "ffmpeg"))
+        .or_else(|| find_on_path("ffmpeg"))
 }
 
-fn resolve_sidecar(app: &AppHandle, name: &str) -> Option<PathBuf> {
+pub fn managed_ytdlp_path(app: &AppHandle) -> Result<PathBuf, AppError> {
+    managed_binary_path(app, "yt-dlp").ok_or_else(|| {
+        AppError::new(
+            "update_permission",
+            "yt-dlp를 저장할 폴더를 준비하지 못했습니다.",
+        )
+    })
+}
+
+fn ensure_managed_from_sidecar(app: &AppHandle, name: &str) {
+    let Some(dest) = managed_binary_path(app, name) else {
+        return;
+    };
+    if dest.is_file() {
+        return;
+    }
+    let Some(src) = find_bundled_sidecar(app, name) else {
+        return;
+    };
+    if src == dest {
+        return;
+    }
+    if let Some(parent) = dest.parent() {
+        if std::fs::create_dir_all(parent).is_err() {
+            return;
+        }
+    }
+    if std::fs::copy(&src, &dest).is_ok() {
+        set_executable(&dest);
+    }
+}
+
+fn managed_if_exists(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    managed_binary_path(app, name).filter(|path| path.is_file())
+}
+
+fn managed_binary_path(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|dir| dir.join("binaries").join(plain_binary_name(name)))
+}
+
+fn find_bundled_sidecar(app: &AppHandle, name: &str) -> Option<PathBuf> {
+    sidecar_candidates(app, name)
+        .into_iter()
+        .find(|path| path.is_file())
+}
+
+fn sidecar_candidates(app: &AppHandle, name: &str) -> Vec<PathBuf> {
     let triple = current_target_triple();
     let sidecar_name = sidecar_file_name(name, triple);
-    let plain_name = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-
+    let plain_name = plain_binary_name(name);
     let mut candidates = Vec::new();
 
     if let Ok(resource_dir) = app.path().resource_dir() {
@@ -48,11 +100,11 @@ fn resolve_sidecar(app: &AppHandle, name: &str) -> Option<PathBuf> {
     let crate_binaries = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("binaries");
     candidates.push(crate_binaries.join(&sidecar_name));
     candidates.push(crate_binaries.join(&plain_name));
+    candidates
+}
 
-    if let Some(found) = candidates.into_iter().find(|path| path.is_file()) {
-        return Some(found);
-    }
-
+fn find_on_path(name: &str) -> Option<PathBuf> {
+    let plain_name = plain_binary_name(name);
     which::which(&plain_name)
         .or_else(|_| which::which(name))
         .ok()
@@ -63,6 +115,26 @@ fn sidecar_file_name(name: &str, triple: &str) -> String {
         format!("{name}-{triple}.exe")
     } else {
         format!("{name}-{triple}")
+    }
+}
+
+fn plain_binary_name(name: &str) -> String {
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_string()
+    }
+}
+
+fn set_executable(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = std::fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o755);
+            let _ = std::fs::set_permissions(path, permissions);
+        }
     }
 }
 
@@ -91,5 +163,29 @@ fn current_target_triple() -> &'static str {
     )))]
     {
         "unknown"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plain_binary_name, sidecar_file_name};
+
+    #[test]
+    fn sidecar_names_include_host_triple() {
+        let name = sidecar_file_name("yt-dlp", "aarch64-apple-darwin");
+        if cfg!(windows) {
+            assert_eq!(name, "yt-dlp-aarch64-apple-darwin.exe");
+        } else {
+            assert_eq!(name, "yt-dlp-aarch64-apple-darwin");
+        }
+    }
+
+    #[test]
+    fn plain_names_use_windows_extension() {
+        if cfg!(windows) {
+            assert_eq!(plain_binary_name("ffmpeg"), "ffmpeg.exe");
+        } else {
+            assert_eq!(plain_binary_name("ffmpeg"), "ffmpeg");
+        }
     }
 }

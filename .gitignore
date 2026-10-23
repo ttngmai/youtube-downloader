@@ -1,5 +1,6 @@
-# Bundled sidecar binaries (fetched in later phases)
-src-tauri/binaries/
+# Bundled sidecar binaries (downloaded by npm run prepare:sidecars)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep
 
 # Logs
 logs

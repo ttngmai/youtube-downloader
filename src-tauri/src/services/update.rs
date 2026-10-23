@@ -47,9 +47,10 @@ pub async fn update(app: &AppHandle) -> Result<YtdlpUpdateResult, AppError> {
     }
 
     let bytes = download_latest_binary().await?;
-    replace_binary(&binary, &bytes).await?;
+    let target = bins::managed_ytdlp_path(app)?;
+    replace_binary(&target, &bytes).await?;
 
-    let current_version = read_version(&binary).await.unwrap_or_else(|_| {
+    let current_version = read_version(&target).await.unwrap_or_else(|_| {
         latest_version
             .clone()
             .unwrap_or_else(|| previous_version.clone())
@@ -159,10 +160,11 @@ fn write_binary_atomic(target: &Path, bytes: &[u8]) -> Result<(), AppError> {
         .and_then(|name| name.to_str())
         .ok_or_else(AppError::update_failed)?;
     let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(permission_or_failed)?;
     let temp = parent.join(format!("{file_name}.new"));
     let backup = parent.join(format!("{file_name}.bak"));
 
-    std::fs::write(&temp, bytes).map_err(|error| permission_or_failed(error))?;
+    std::fs::write(&temp, bytes).map_err(permission_or_failed)?;
 
     if backup.exists() {
         let _ = std::fs::remove_file(&backup);
@@ -184,6 +186,24 @@ fn write_binary_atomic(target: &Path, bytes: &[u8]) -> Result<(), AppError> {
     }
 
     let _ = std::fs::remove_file(&backup);
+    set_executable(target)?;
+    Ok(())
+}
+
+fn set_executable(path: &Path) -> Result<(), AppError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = std::fs::metadata(path)
+            .map_err(permission_or_failed)?
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).map_err(permission_or_failed)?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 
@@ -213,6 +233,8 @@ fn http_client() -> Result<reqwest::Client, AppError> {
 fn latest_binary_url() -> &'static str {
     if cfg!(windows) {
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+    } else if cfg!(target_os = "macos") {
+        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
     } else {
         "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
     }
@@ -243,13 +265,25 @@ fn looks_like_binary(bytes: &[u8]) -> bool {
     if cfg!(windows) {
         bytes.starts_with(b"MZ")
     } else {
-        bytes[0] == 0x7F || bytes.starts_with(b"#!")
+        bytes.starts_with(b"#!") || bytes[0] == 0x7F || is_mach_o(bytes)
     }
+}
+
+fn is_mach_o(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xCF, 0xFA, 0xED, 0xFE])
+        || bytes.starts_with(&[0xCE, 0xFA, 0xED, 0xFE])
+        || bytes.starts_with(&[0xFE, 0xED, 0xFA, 0xCF])
+        || bytes.starts_with(&[0xFE, 0xED, 0xFA, 0xCE])
+        || bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBE])
+        || bytes.starts_with(&[0xBE, 0xBA, 0xFE, 0xCA])
+        || bytes.starts_with(&[0xCA, 0xFE, 0xBA, 0xBF])
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{looks_like_binary, normalize_version, parse_version, versions_differ};
+    use super::{
+        latest_binary_url, looks_like_binary, normalize_version, parse_version, versions_differ,
+    };
 
     #[test]
     fn parses_version_output() {
@@ -270,6 +304,33 @@ mod tests {
         let mut exe = vec![0u8; 1_000_001];
         exe[0] = b'M';
         exe[1] = b'Z';
-        assert!(looks_like_binary(&exe) || !cfg!(windows));
+        assert_eq!(looks_like_binary(&exe), cfg!(windows));
+    }
+
+    #[test]
+    fn accepts_unix_binary_payloads() {
+        let mut macho = vec![0u8; 1_000_001];
+        macho[0] = 0xCF;
+        macho[1] = 0xFA;
+        macho[2] = 0xED;
+        macho[3] = 0xFE;
+        assert_eq!(looks_like_binary(&macho), !cfg!(windows));
+
+        let mut shebang = vec![0u8; 1_000_001];
+        shebang[0] = b'#';
+        shebang[1] = b'!';
+        assert_eq!(looks_like_binary(&shebang), !cfg!(windows));
+    }
+
+    #[test]
+    fn latest_url_matches_host_platform() {
+        let url = latest_binary_url();
+        if cfg!(windows) {
+            assert!(url.ends_with("yt-dlp.exe"));
+        } else if cfg!(target_os = "macos") {
+            assert!(url.ends_with("yt-dlp_macos"));
+        } else {
+            assert!(url.ends_with("yt-dlp"));
+        }
     }
 }

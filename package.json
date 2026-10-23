@@ -8,8 +8,11 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check:sidecars": "node scripts/check-sidecars.mjs",
-    "build:windows": "npm run check:sidecars && tauri build --bundles nsis"
+    "prepare:sidecars": "node scripts/prepare-sidecars.mjs",
+    "check:sidecars": "node scripts/prepare-sidecars.mjs --check-only",
+    "build:desktop": "node scripts/build-desktop.mjs",
+    "build:windows": "node scripts/build-desktop.mjs --bundles nsis",
+    "build:macos": "node scripts/build-desktop.mjs --bundles dmg"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

@@ -1,0 +1,42 @@
+name: Build installers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prepare:sidecars
+      - run: npm run build:windows
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run prepare:sidecars
+      - run: npm run build:macos
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: src-tauri/target/release/bundle/dmg/*.dmg
